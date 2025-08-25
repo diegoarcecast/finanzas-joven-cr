@@ -154,6 +154,61 @@ v1.MapGet("categories", async (ClaimsPrincipal me, FinanzasDbContext db) =>
 .RequireAuthorization()
 .WithTags("Categories");
 
+// PUT /api/v1/categories/{id}
+v1.MapPut("categories/{id:guid}", async (
+        Guid id,
+        UpdateCategoryRequest req,
+        ClaimsPrincipal me,
+        FinanzasDbContext db) =>
+{
+    var userId = RequireUserId(me);
+
+    var cat = await db.Categories
+        .FirstOrDefaultAsync(c => c.Id == id && c.UserId == userId);
+
+    if (cat is null) return Results.NotFound();
+
+    // Nombre único por usuario (excluyendo la misma categoría)
+    var name = req.Name.Trim();
+    var exists = await db.Categories.AnyAsync(c =>
+        c.UserId == userId && c.Id != id && c.Name == name);
+
+    if (exists) return Results.Conflict(new { error = "category_name_already_exists" });
+
+    cat.Name = name;
+    cat.Color = req.Color?.Trim() ?? cat.Color;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new CategoryResponse(cat.Id, cat.Name, cat.Color));
+})
+.RequireAuthorization()
+.WithTags("Categories");
+
+// DELETE /api/v1/categories/{id}
+v1.MapDelete("categories/{id:guid}", async (
+        Guid id,
+        ClaimsPrincipal me,
+        FinanzasDbContext db) =>
+{
+    var userId = RequireUserId(me);
+
+    // No permitir borrar si tiene movimientos asociados del mismo usuario
+    var inUse = await db.Movements.AnyAsync(m => m.UserId == userId && m.CategoryId == id);
+    if (inUse) return Results.BadRequest(new { error = "category_in_use" });
+
+    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id && c.UserId == userId);
+    if (cat is null) return Results.NotFound();
+
+    db.Categories.Remove(cat);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+})
+.RequireAuthorization()
+.WithTags("Categories");
+
+
 // Movements
 v1.MapPost("movements", async (
         CreateMovementRequest req,
@@ -205,5 +260,81 @@ v1.MapGet("movements", async (
 })
 .RequireAuthorization()
 .WithTags("Movements");
+
+// PUT /api/v1/movements/{id}
+v1.MapPut("movements/{id:guid}", async (
+        Guid id,
+        UpdateMovementRequest req,
+        ClaimsPrincipal me,
+        FinanzasDbContext db) =>
+{
+    var userId = RequireUserId(me);
+
+    // El movimiento debe ser del usuario
+    var mov = await db.Movements
+        .FirstOrDefaultAsync(m => m.Id == id && m.UserId == userId);
+
+    if (mov is null) return Results.NotFound();
+
+    // La categoría nueva también debe ser del usuario
+    var ownsCategory = await db.Categories
+        .AnyAsync(c => c.Id == req.CategoryId && c.UserId == userId);
+
+    if (!ownsCategory) return Results.BadRequest(new { error = "invalid_category" });
+
+    mov.CategoryId = req.CategoryId;
+    mov.Date = req.Date;
+    mov.Amount = req.Amount;
+    mov.Type = req.Type;
+    mov.Note = req.Note;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new MovementResponse(
+        mov.Id, mov.CategoryId, mov.Date, mov.Amount, mov.Type, mov.Note));
+})
+.RequireAuthorization()
+.WithTags("Movements");
+
+// DELETE /api/v1/movements/{id}
+v1.MapDelete("movements/{id:guid}", async (
+        Guid id,
+        ClaimsPrincipal me,
+        FinanzasDbContext db) =>
+{
+    var userId = RequireUserId(me);
+
+    var mov = await db.Movements
+        .FirstOrDefaultAsync(m => m.Id == id && m.UserId == userId);
+
+    if (mov is null) return Results.NotFound();
+
+    db.Movements.Remove(mov);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+})
+.RequireAuthorization()
+.WithTags("Movements");
+
+// GET /api/v1/movements/{id}
+v1.MapGet("movements/{id:guid}", async (
+        Guid id,
+        ClaimsPrincipal me,
+        FinanzasDbContext db) =>
+{
+    var userId = RequireUserId(me);
+
+    var mov = await db.Movements
+        .Where(m => m.Id == id && m.UserId == userId)
+        .Select(m => new MovementResponse(m.Id, m.CategoryId, m.Date, m.Amount, m.Type, m.Note))
+        .FirstOrDefaultAsync();
+
+    return mov is null ? Results.NotFound() : Results.Ok(mov);
+})
+.RequireAuthorization()
+.WithTags("Movements");
+
+
 
 app.Run();
